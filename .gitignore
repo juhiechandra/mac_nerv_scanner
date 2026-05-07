@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .nerv-scan/
 reports/
+
+# local-only planning + working docs (do not commit)
+docs/

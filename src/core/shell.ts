@@ -76,3 +76,19 @@ export async function commandSucceeds(
   const result = await runCommand(binary, args, options);
   return result.exitCode === 0;
 }
+
+export function commandUnavailable(result: CommandResult): boolean {
+  if (result.exitCode === 127 || result.exitCode === -1) return true;
+  return /command not found|no such file/i.test(result.stderr);
+}
+
+export function commandFailed(result: CommandResult): boolean {
+  return result.exitCode !== 0 || result.timedOut;
+}
+
+export function describeFailure(result: CommandResult): string {
+  if (result.timedOut) return 'command timed out';
+  if (commandUnavailable(result)) return 'command unavailable on this system';
+  const trimmed = result.stderr.trim();
+  return trimmed.length > 0 ? trimmed : `exit code ${result.exitCode}`;
+}
