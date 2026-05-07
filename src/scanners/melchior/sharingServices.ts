@@ -12,12 +12,15 @@ const SHARING_LAUNCH_LABELS = [
   { label: 'com.openssh.sshd', service: 'Remote Login (SSH)' },
 ];
 
-async function isLaunchctlLoaded(label: string): Promise<boolean> {
-  const result = await runCommand('launchctl', ['print-disabled', 'system']);
-  const haystack = result.stdout + result.stderr;
-  const disabledLine = new RegExp(`\\"${label.replaceAll('.', '\\\\.')}\\"\\s*=>\\s*disabled`, 'i');
-  if (disabledLine.test(haystack)) return false;
-  return haystack.includes(label);
+async function isServiceLoaded(label: string): Promise<{ loaded: boolean; evidence: string }> {
+  const result = await runCommand('launchctl', ['print', `system/${label}`]);
+  if (result.exitCode === 0) {
+    return { loaded: true, evidence: `launchctl print system/${label} → loaded` };
+  }
+  if (/could not find service/i.test(result.stderr)) {
+    return { loaded: false, evidence: `launchctl print system/${label} → not loaded` };
+  }
+  return { loaded: false, evidence: result.stderr.trim() || `exit ${result.exitCode}` };
 }
 
 function patternForEnabled(enabled: boolean): Pattern {
@@ -26,17 +29,16 @@ function patternForEnabled(enabled: boolean): Pattern {
 
 async function* scanSharingServices(): AsyncIterable<Finding> {
   for (const { label, service } of SHARING_LAUNCH_LABELS) {
-    const enabled = await isLaunchctlLoaded(label);
+    const { loaded, evidence } = await isServiceLoaded(label);
     yield buildFinding({
       scannerId: SCANNER_ID,
       magi: 'melchior',
-      pattern: patternForEnabled(enabled),
-      title: `${service}: ${enabled ? 'enabled' : 'disabled'}`,
-      evidence: `launchctl label: ${label}`,
-      remediation:
-        enabled && service !== 'Remote Login (SSH)'
-          ? `Disable from System Settings → General → Sharing if not required.`
-          : undefined,
+      pattern: patternForEnabled(loaded),
+      title: `${service}: ${loaded ? 'enabled' : 'disabled'}`,
+      evidence,
+      remediation: loaded
+        ? `Disable from System Settings → General → Sharing if not required (label: ${label}).`
+        : undefined,
     });
   }
 }

@@ -51,10 +51,17 @@ export function App({ redact, reportPath }: AppProps) {
       exit();
       return;
     }
+    if (key.escape) {
+      state.cancel();
+      return;
+    }
     if (state.findings.length === 0) return;
     if (key.upArrow) setSelectedIndex((current) => clampSelection(current - 1, state.findings.length));
     if (key.downArrow) setSelectedIndex((current) => clampSelection(current + 1, state.findings.length));
     if (key.return) setShowDetail((current) => !current);
+    if (input === 's' && selected && state.rerunning === null) {
+      void state.rerun(selected.scannerId);
+    }
     if (input === 'r' && state.scanComplete) {
       void (async () => {
         const path = await writeReport(state.findings, {
@@ -81,6 +88,33 @@ export function App({ redact, reportPath }: AppProps) {
         totalFindings={stats.totalFindings}
         threatLevel={stats.threatLevel}
       />
+      {state.permissions ? (
+        <Box paddingX={1}>
+          <Text color={palette.ash}>
+            permissions:{' '}
+            <Text color={state.permissions.fullDiskAccess ? palette.terminalGreen : palette.warningYellow}>
+              FDA {state.permissions.fullDiskAccess ? 'granted' : 'denied'}
+            </Text>{' '}
+            ·{' '}
+            <Text
+              color={
+                state.permissions.automation === true
+                  ? palette.terminalGreen
+                  : state.permissions.automation === false
+                    ? palette.warningYellow
+                    : palette.ash
+              }
+            >
+              automation{' '}
+              {state.permissions.automation === true
+                ? 'granted'
+                : state.permissions.automation === false
+                  ? 'denied'
+                  : 'unknown'}
+            </Text>
+          </Text>
+        </Box>
+      ) : null}
       <Box>
         <MagiPanel core="casper" title="Casper" total={state.magi.casper.total} completed={state.magi.casper.completed} active={state.magi.casper.active ?? undefined} />
         <MagiPanel core="melchior" title="Melchior" total={state.magi.melchior.total} completed={state.magi.melchior.completed} active={state.magi.melchior.active ?? undefined} />
@@ -101,6 +135,16 @@ export function App({ redact, reportPath }: AppProps) {
         )}
       </Box>
       {showDetail ? <FindingDetail finding={selected} /> : null}
+      {state.rerunning ? (
+        <Box paddingX={1}>
+          <Text color={palette.warningYellow}>rerunning {state.rerunning}…</Text>
+        </Box>
+      ) : null}
+      {state.cancelled ? (
+        <Box paddingX={1}>
+          <Text color={palette.warningYellow}>scan cancelled</Text>
+        </Box>
+      ) : null}
       {reportStatus ? (
         <Box paddingX={1}>
           <Text color={palette.terminalGreen}>{reportStatus}</Text>

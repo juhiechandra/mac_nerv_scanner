@@ -6,8 +6,8 @@ interface FooterBarProps {
   scanComplete: boolean;
 }
 
-const ACTIVE_HINTS = '↑/↓ navigate   enter: details   tab: switch pane   q: quit';
-const COMPLETE_HINTS = '↑/↓ navigate   enter: details   r: write report   q: quit';
+const ACTIVE_HINTS = '↑/↓ navigate   enter: details   s: re-run scanner   esc: cancel   q: quit';
+const COMPLETE_HINTS = '↑/↓ navigate   enter: details   s: re-run   r: write report   q: quit';
 
 export function FooterBar({ scanComplete }: FooterBarProps) {
   const hint = scanComplete ? COMPLETE_HINTS : ACTIVE_HINTS;

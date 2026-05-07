@@ -6,10 +6,15 @@ export interface OrchestratorEvents {
   onFinding: (finding: Finding) => void;
 }
 
+export interface OrchestratorOptions {
+  redact?: boolean;
+  signal?: AbortSignal;
+}
+
 export async function executeScanners(
   scanners: Scanner[],
   events: OrchestratorEvents,
-  options: { redact?: boolean } = {}
+  options: OrchestratorOptions = {},
 ): Promise<void> {
   const context: ScanContext = {
     startedAt: Date.now(),
@@ -20,8 +25,23 @@ export async function executeScanners(
   const grouped = groupByMagi(scanners);
 
   await Promise.all(
-    (Object.keys(grouped) as MagiCore[]).map((core) => runMagiCore(grouped[core] ?? [], context, events))
+    (Object.keys(grouped) as MagiCore[]).map((core) =>
+      runMagiCore(grouped[core] ?? [], context, events, options.signal),
+    ),
   );
+}
+
+export async function executeSingleScanner(
+  scanner: Scanner,
+  events: OrchestratorEvents,
+  options: OrchestratorOptions = {},
+): Promise<void> {
+  const context: ScanContext = {
+    startedAt: Date.now(),
+    hostname: hostname(),
+    redact: options.redact ?? false,
+  };
+  await runScanner(scanner, context, events, options.signal);
 }
 
 function groupByMagi(scanners: Scanner[]): Record<MagiCore, Scanner[]> {
@@ -35,22 +55,47 @@ function groupByMagi(scanners: Scanner[]): Record<MagiCore, Scanner[]> {
 async function runMagiCore(
   scanners: Scanner[],
   context: ScanContext,
-  events: OrchestratorEvents
+  events: OrchestratorEvents,
+  signal?: AbortSignal,
 ): Promise<void> {
   for (const scanner of scanners) {
-    events.onProgress({ scannerId: scanner.id, magi: scanner.magi, status: 'running' });
-    try {
-      for await (const finding of scanner.run(context)) {
-        events.onFinding(finding);
-      }
-      events.onProgress({ scannerId: scanner.id, magi: scanner.magi, status: 'completed' });
-    } catch (error) {
+    if (signal?.aborted) {
       events.onProgress({
         scannerId: scanner.id,
         magi: scanner.magi,
         status: 'failed',
-        message: error instanceof Error ? error.message : String(error),
+        message: 'cancelled',
       });
+      continue;
     }
+    await runScanner(scanner, context, events, signal);
+  }
+}
+
+async function runScanner(
+  scanner: Scanner,
+  context: ScanContext,
+  events: OrchestratorEvents,
+  signal?: AbortSignal,
+): Promise<void> {
+  events.onProgress({ scannerId: scanner.id, magi: scanner.magi, status: 'running' });
+  try {
+    for await (const finding of scanner.run(context)) {
+      if (signal?.aborted) break;
+      events.onFinding(finding);
+    }
+    events.onProgress({
+      scannerId: scanner.id,
+      magi: scanner.magi,
+      status: signal?.aborted ? 'failed' : 'completed',
+      message: signal?.aborted ? 'cancelled' : undefined,
+    });
+  } catch (error) {
+    events.onProgress({
+      scannerId: scanner.id,
+      magi: scanner.magi,
+      status: 'failed',
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }

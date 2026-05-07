@@ -1,17 +1,19 @@
-import { runCommand } from '../../core/shell.js';
+import { runCommand, commandFailed, describeFailure } from '../../core/shell.js';
 import { buildFinding } from '../../core/finding.js';
 import type { Finding, Scanner } from '../../core/types.js';
 
 const SCANNER_ID = 'casper.software-updates';
+const TIMEOUT_MS = 45000;
 
-async function listAvailableUpdates(): Promise<string> {
-  const result = await runCommand('softwareupdate', ['-l'], { timeoutMs: 25000 });
-  return (result.stdout + result.stderr).trim();
+async function listAvailableUpdates() {
+  return runCommand('softwareupdate', ['-l'], { timeoutMs: TIMEOUT_MS });
 }
 
-function countOfferedUpdates(output: string): number {
-  const matches = output.match(/^\*\s.+$/gm);
-  return matches ? matches.length : 0;
+function countOfferedUpdates(stdout: string): number {
+  const labelMatches = stdout.match(/^\s*\*\s*Label:/gm);
+  if (labelMatches) return labelMatches.length;
+  const legacyMatches = stdout.match(/^\s*\*\s+\S/gm);
+  return legacyMatches ? legacyMatches.length : 0;
 }
 
 function classifyUpdateCount(count: number): 'blue' | 'yellow' | 'orange' {
@@ -21,14 +23,29 @@ function classifyUpdateCount(count: number): 'blue' | 'yellow' | 'orange' {
 }
 
 async function* scanSoftwareUpdates(): AsyncIterable<Finding> {
-  const output = await listAvailableUpdates();
-  const count = countOfferedUpdates(output);
+  const result = await listAvailableUpdates();
+
+  if (commandFailed(result)) {
+    yield buildFinding({
+      scannerId: SCANNER_ID,
+      magi: 'casper',
+      pattern: 'yellow',
+      title: 'Software update check failed',
+      evidence: describeFailure(result),
+      remediation: 'Check network connectivity and retry; softwareupdate -l requires Apple servers.',
+    });
+    return;
+  }
+
+  const stdout = result.stdout.trim();
+  const count = countOfferedUpdates(stdout);
+
   yield buildFinding({
     scannerId: SCANNER_ID,
     magi: 'casper',
     pattern: classifyUpdateCount(count),
     title: count === 0 ? 'macOS is up to date' : `${count} pending macOS update(s)`,
-    evidence: output || 'softwareupdate returned no data',
+    evidence: stdout || 'softwareupdate returned no data',
     remediation: count > 0 ? 'Install via System Settings → General → Software Update.' : undefined,
   });
 }

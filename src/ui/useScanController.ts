@@ -1,9 +1,10 @@
-import { useEffect, useReducer } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { hostname } from 'node:os';
-import { executeScanners } from '../core/orchestrator.js';
+import { executeScanners, executeSingleScanner } from '../core/orchestrator.js';
 import { loadAllScanners } from '../core/registry.js';
 import { patternRank } from '../core/finding.js';
 import { redactSensitive } from '../core/redact.js';
+import { probePermissions, type Permissions } from '../core/permissions.js';
 import type { Finding, MagiCore, Scanner } from '../core/types.js';
 
 export interface MagiState {
@@ -18,12 +19,20 @@ export interface ScanState {
   findings: Finding[];
   magi: Record<MagiCore, MagiState>;
   scanComplete: boolean;
+  cancelled: boolean;
+  permissions: Permissions | null;
+  rerunning: string | null;
 }
 
 type ScanAction =
   | { type: 'progress'; magi: MagiCore; scannerId: string; status: 'running' | 'completed' | 'failed' }
   | { type: 'finding'; finding: Finding }
-  | { type: 'complete' };
+  | { type: 'complete' }
+  | { type: 'cancelled' }
+  | { type: 'permissions'; permissions: Permissions }
+  | { type: 'rerun-start'; scannerId: string }
+  | { type: 'rerun-end' }
+  | { type: 'drop-findings'; scannerId: string };
 
 interface InitialStateInput {
   scanners: Scanner[];
@@ -46,6 +55,9 @@ function buildInitialState({ scanners, redact }: InitialStateInput): ScanState {
     findings: [],
     magi,
     scanComplete: false,
+    cancelled: false,
+    permissions: null,
+    rerunning: null,
   };
 }
 
@@ -75,39 +87,100 @@ function reducer(state: ScanState, action: ScanAction): ScanState {
       return { ...state, findings: sortFindings([...state.findings, action.finding]) };
     case 'complete':
       return { ...state, scanComplete: true };
+    case 'cancelled':
+      return { ...state, scanComplete: true, cancelled: true };
+    case 'permissions':
+      return { ...state, permissions: action.permissions };
+    case 'rerun-start':
+      return { ...state, rerunning: action.scannerId };
+    case 'rerun-end':
+      return { ...state, rerunning: null };
+    case 'drop-findings':
+      return {
+        ...state,
+        findings: state.findings.filter((f) => f.scannerId !== action.scannerId),
+        magi: {
+          ...state.magi,
+          ...Object.fromEntries(
+            (Object.entries(state.magi) as Array<[MagiCore, MagiState]>).map(([core, value]) => {
+              return [core, value];
+            }),
+          ),
+        },
+      };
   }
 }
 
 export function useScanController(options: { redact: boolean; bootComplete: boolean }) {
-  const scanners = loadAllScanners();
-  const [state, dispatch] = useReducer(reducer, { scanners, redact: options.redact }, buildInitialState);
+  const scannersRef = useRef<Scanner[]>(loadAllScanners());
+  const [state, dispatch] = useReducer(
+    reducer,
+    { scanners: scannersRef.current, redact: options.redact },
+    buildInitialState,
+  );
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!options.bootComplete) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     let cancelled = false;
     void (async () => {
-      await executeScanners(scanners, {
-        onProgress: (progress) => {
-          if (cancelled) return;
-          if (progress.status === 'pending') return;
-          dispatch({
-            type: 'progress',
-            magi: progress.magi,
-            scannerId: progress.scannerId,
-            status: progress.status,
-          });
+      const permissions = await probePermissions();
+      if (!cancelled) dispatch({ type: 'permissions', permissions });
+
+      await executeScanners(
+        scannersRef.current,
+        {
+          onProgress: (progress) => {
+            if (cancelled) return;
+            if (progress.status === 'pending') return;
+            dispatch({
+              type: 'progress',
+              magi: progress.magi,
+              scannerId: progress.scannerId,
+              status: progress.status,
+            });
+          },
+          onFinding: (finding) => {
+            if (cancelled) return;
+            dispatch({ type: 'finding', finding });
+          },
         },
-        onFinding: (finding) => {
-          if (cancelled) return;
-          dispatch({ type: 'finding', finding });
-        },
-      }, { redact: options.redact });
-      if (!cancelled) dispatch({ type: 'complete' });
+        { redact: options.redact, signal: controller.signal },
+      );
+      if (cancelled) return;
+      if (controller.signal.aborted) dispatch({ type: 'cancelled' });
+      else dispatch({ type: 'complete' });
     })();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [options.bootComplete, options.redact]);
 
-  return state;
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const rerun = useCallback(
+    async (scannerId: string) => {
+      const target = scannersRef.current.find((s) => s.id === scannerId);
+      if (!target) return;
+      dispatch({ type: 'drop-findings', scannerId });
+      dispatch({ type: 'rerun-start', scannerId });
+      await executeSingleScanner(
+        target,
+        {
+          onProgress: () => undefined,
+          onFinding: (finding) => dispatch({ type: 'finding', finding }),
+        },
+        { redact: options.redact },
+      );
+      dispatch({ type: 'rerun-end' });
+    },
+    [options.redact],
+  );
+
+  return { ...state, cancel, rerun };
 }

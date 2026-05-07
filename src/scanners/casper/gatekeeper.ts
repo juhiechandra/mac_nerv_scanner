@@ -1,21 +1,26 @@
-import { runCommand } from '../../core/shell.js';
+import { runCommand, commandFailed, describeFailure } from '../../core/shell.js';
 import { buildFinding } from '../../core/finding.js';
 import type { Finding, Scanner } from '../../core/types.js';
 
 const SCANNER_ID = 'casper.gatekeeper';
 
-async function readAssessmentState(): Promise<string> {
-  const result = await runCommand('spctl', ['--status']);
-  return (result.stdout + result.stderr).trim();
-}
-
-function isAssessmentEnabled(output: string): boolean {
-  return /assessments enabled/i.test(output);
-}
-
 async function* scanGatekeeper(): AsyncIterable<Finding> {
-  const status = await readAssessmentState();
-  const enabled = isAssessmentEnabled(status);
+  const result = await runCommand('spctl', ['--status']);
+
+  if (commandFailed(result)) {
+    yield buildFinding({
+      scannerId: SCANNER_ID,
+      magi: 'casper',
+      pattern: 'yellow',
+      title: 'Gatekeeper status unavailable',
+      evidence: describeFailure(result),
+    });
+    return;
+  }
+
+  const status = result.stdout.trim();
+  const enabled = /assessments enabled/i.test(status);
+
   yield buildFinding({
     scannerId: SCANNER_ID,
     magi: 'casper',

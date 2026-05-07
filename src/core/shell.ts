@@ -13,12 +13,36 @@ export interface CommandOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 8000;
+const MAX_CONCURRENT_COMMANDS = 4;
+
+let activeCommands = 0;
+const waitQueue: Array<() => void> = [];
+
+async function acquireSlot(): Promise<void> {
+  if (activeCommands < MAX_CONCURRENT_COMMANDS) {
+    activeCommands += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    waitQueue.push(() => {
+      activeCommands += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  activeCommands -= 1;
+  const next = waitQueue.shift();
+  if (next) next();
+}
 
 export async function runCommand(
   binary: string,
   args: string[],
   options: CommandOptions = {}
 ): Promise<CommandResult> {
+  await acquireSlot();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return new Promise((resolve) => {
@@ -26,6 +50,14 @@ export async function runCommand(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let settled = false;
+
+    const finish = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      releaseSlot();
+      resolve(result);
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -41,12 +73,12 @@ export async function runCommand(
 
     child.on('error', () => {
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: -1, timedOut });
+      finish({ stdout, stderr, exitCode: -1, timedOut });
     });
 
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code ?? -1, timedOut });
+      finish({ stdout, stderr, exitCode: code ?? -1, timedOut });
     });
 
     if (options.input) {

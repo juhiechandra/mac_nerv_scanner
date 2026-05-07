@@ -10,6 +10,12 @@ async function readPreference(domain: string, key: string): Promise<string | nul
   return result.stdout.trim();
 }
 
+function parseDelay(raw: string | null): number | null {
+  if (raw === null) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
 function classifyDelay(delaySeconds: number | null): Pattern {
   if (delaySeconds === null) return 'yellow';
   if (delaySeconds === 0) return 'blue';
@@ -20,7 +26,7 @@ function classifyDelay(delaySeconds: number | null): Pattern {
 async function* scanScreenLockPolicy(): AsyncIterable<Finding> {
   const askPassword = await readPreference('com.apple.screensaver', 'askForPassword');
   const askDelayRaw = await readPreference('com.apple.screensaver', 'askForPasswordDelay');
-  const askDelay = askDelayRaw !== null ? Number(askDelayRaw) : null;
+  const askDelay = parseDelay(askDelayRaw);
 
   const enforced = askPassword === '1';
 
@@ -30,21 +36,24 @@ async function* scanScreenLockPolicy(): AsyncIterable<Finding> {
     pattern: enforced ? 'blue' : 'orange',
     title: enforced ? 'Screen lock requires password' : 'Screen lock does NOT require password',
     evidence: `askForPassword=${askPassword ?? '(unset)'}, askForPasswordDelay=${askDelayRaw ?? '(unset)'}`,
-    remediation: enforced
-      ? undefined
-      : 'Enable: defaults write com.apple.screensaver askForPassword -int 1',
+    remediation: enforced ? undefined : 'Enable: defaults write com.apple.screensaver askForPassword -int 1',
   });
 
   yield buildFinding({
     scannerId: SCANNER_ID,
     magi: 'balthasar',
     pattern: classifyDelay(askDelay),
-    title: `Password required ${askDelay === null ? 'unknown delay' : `${askDelay}s after lock`}`,
+    title:
+      askDelay === null
+        ? 'Screen lock delay unknown'
+        : `Password required ${askDelay}s after lock`,
     evidence: `askForPasswordDelay=${askDelayRaw ?? '(unset)'}`,
     remediation:
       askDelay !== null && askDelay > 0
         ? 'Set delay to 0: defaults write com.apple.screensaver askForPasswordDelay -int 0'
-        : undefined,
+        : askDelay === null
+          ? 'Set explicitly: defaults write com.apple.screensaver askForPasswordDelay -int 0'
+          : undefined,
   });
 }
 
